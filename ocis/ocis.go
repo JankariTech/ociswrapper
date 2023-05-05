@@ -2,59 +2,43 @@ package ocis
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
-	"ociswrapper/common"
 	"os"
 	"os/exec"
-	"sync"
 	"time"
+
+	"ociswrapper/common"
+	"ociswrapper/ocis/config"
 )
 
-// var ocis = "/mnt/workspace/owncloud/ocis/ocis/bin/ocis"
+var cmd *exec.Cmd
 
-var ocisCmd *exec.Cmd
+func Start(envMap map[string]any) {
+	defer common.Wg.Done()
 
-func InitOcis() (string, string) {
-	initCmd := exec.Command(common.GetBinPath(), "init", "--insecure", "true")
-	log.Print(initCmd.String())
-	initCmd.Env = os.Environ()
-	// [cleanup] not required
-	initCmd.Env = append(initCmd.Env, "IDM_ADMIN_PASSWORD=admin")
-
-	var out, err bytes.Buffer
-	initCmd.Stdout = &out
-	initCmd.Stderr = &err
-	initCmd.Run()
-
-	return out.String(), err.String()
-}
-
-func StartOcis(wg *sync.WaitGroup, envMap map[string]any) {
-	defer wg.Done()
-	ocisCmd = exec.Command(common.GetBinPath(), "server")
-	ocisCmd.Env = os.Environ()
+	cmd = exec.Command(config.Get("bin"), "server")
+	cmd.Env = os.Environ()
 	var environments []string
 	if envMap != nil {
 		for key, value := range envMap {
 			environments = append(environments, fmt.Sprintf("%s=%v", key, value))
 		}
 	}
-	ocisCmd.Env = append(ocisCmd.Env, environments...)
+	cmd.Env = append(cmd.Env, environments...)
 
-	stderr, err := ocisCmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		fmt.Println(err)
 	}
-	stdout, err := ocisCmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	err = ocisCmd.Start()
+	err = cmd.Start()
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -71,15 +55,14 @@ func StartOcis(wg *sync.WaitGroup, envMap map[string]any) {
 	}
 }
 
-func stopOcis() {
-	err := ocisCmd.Process.Kill()
+func Stop() {
+	err := cmd.Process.Kill()
 	if err != nil {
-		log.Panic("Cannot kill ocis server")
+		log.Panic("Cannot kill oCIS server")
 	}
 }
 
-func WaitForOcis() bool {
-	url := "https://localhost:9200"
+func WaitForConnection() bool {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
@@ -94,14 +77,14 @@ func WaitForOcis() bool {
 	for {
 		select {
 		case <-timeout:
-			fmt.Println(fmt.Sprintf("Timeout waiting for ocis server [%f] seconds", timeoutValue.Seconds()))
+			fmt.Println(fmt.Sprintf("Timeout waiting for oCIS server [%f] seconds", timeoutValue.Seconds()))
 			return false
 		default:
-			res, err := client.Get(url)
+			_, err := client.Get(config.Get("url"))
 			if err != nil {
-				fmt.Println("Waiting for ocis server...")
+				fmt.Println("Waiting for oCIS server...")
 			} else {
-				fmt.Println(fmt.Sprintf("Ocis server is ready [%d]", res.StatusCode))
+				fmt.Println(fmt.Sprintf("oCIS server is ready to accept requests"))
 				return true
 			}
 			time.Sleep(500 * time.Millisecond)
@@ -109,10 +92,12 @@ func WaitForOcis() bool {
 	}
 }
 
-func RestartOcisServer(wg *sync.WaitGroup, envMap map[string]any) bool {
-	log.Print("Restarting ocis server...")
-	stopOcis()
-	wg.Add(1)
-	go StartOcis(wg, envMap)
-	return WaitForOcis()
+func Restart(envMap map[string]any) bool {
+	log.Print("Restarting oCIS server...")
+	Stop()
+
+	common.Wg.Add(1)
+	go Start(envMap)
+
+	return WaitForConnection()
 }
